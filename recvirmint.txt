@@ -1,0 +1,404 @@
+#!/usr/bin/env bash
+# ==============================================================================
+#  RECRIMINAT.TXT  -  IRON WAFFLE OMEGA  v1.0.0  "FULL BREAKFAST"
+#  One file. Two shells. Installs every tool the lab needs.
+#  DDoS Mechanics | HTTPS Defense | Traffic Analysis
+# ==============================================================================
+#
+#  KALI / LINUX        bash recriminat.txt
+#  WINDOWS (PS)        powershell -ExecutionPolicy Bypass -File recriminat.txt
+#
+#  This file is a polyglot: it is a valid bash script AND a valid PowerShell
+#  script. Each shell runs only its own payload and skips the other's.
+#  Nothing below is executed at lab runtime that talks to the internet -
+#  the internet is used only HERE, to install tools.
+#
+# ==============================================================================
+#  WHAT THIS INSTALLS
+# ==============================================================================
+#
+#  tool              windows                 kali / debian
+#  ----------------  ----------------------  ------------------------------
+#  python 3.8+       winget if missing       apt-get if missing
+#  pip               via python -m ensurepip via python3-pip
+#  cryptography      pip (TLS cert forge)    pip (TLS cert forge)
+#  psutil            pip (cpu/rss monitor)   pip (cpu/rss monitor)
+#  venv              .venv\                   .venv/
+#  curl check        built in                apt-get install curl
+#  ironwaffle.py     cert + doctor + selftest + optional serve
+#
+#  Everything is idempotent. Run it as many times as you like.
+#  Nothing is uninstalled, nothing is overwritten except a re-generated cert.
+#
+# ==============================================================================
+#  QUICK START
+# ==============================================================================
+#
+#  Kali / Linux
+#     chmod +x recriminat.txt
+#     bash recriminat.txt
+#     bash recriminat.txt --serve          # install then launch the lab
+#
+#  Windows PowerShell
+#     powershell -ExecutionPolicy Bypass -File recriminat.txt
+#     powershell -ExecutionPolicy Bypass -File recriminat.txt -Serve
+#
+#  Put recriminat.txt and ironwaffle.py in the SAME folder.
+#  The installer finds ironwaffle.py next to itself, automatically.
+#
+# ==============================================================================
+#  OPTIONS
+# ==============================================================================
+#
+#  --dry-run / -DryRun     show the plan, change nothing
+#  --no-venv / -NoVenv     install into the system python instead of a venv
+#  --serve   / -Serve      start the HTTPS lab after installing
+#  --help    / -Help       print this text
+#
+# ==============================================================================
+#  WHAT IT WILL NOT DO
+# ==============================================================================
+#
+#  * It never touches a public IP at lab runtime - the server binds 127.0.0.1.
+#  * It does not install a real DDoS tool. Attack traffic is simulated math.
+#  * It does not create a botnet, spoof addresses, or bypass rate limits.
+#  * It does not modify your firewall, hosts file, or DNS settings.
+#  * It does not run as admin/root unless a package install needs it.
+#
+# ==============================================================================
+#  MANUAL EQUIVALENT (if you prefer to do it by hand)
+# ==============================================================================
+#
+#  Kali:     sudo apt update && sudo apt install -y python3 python3-pip python3-venv
+#            python3 -m venv .venv && . .venv/bin/activate
+#            pip install cryptography psutil
+#            python ironwaffle.py cert && python ironwaffle.py doctor
+#            python ironwaffle.py serve
+#
+#  Windows:  winget install Python.Python.3.12
+#            python -m venv .venv && .venv\Scripts\Activate.ps1
+#            pip install cryptography psutil
+#            python ironwaffle.py cert ; python ironwaffle.py doctor
+#            python ironwaffle.py serve
+#
+# ==============================================================================
+#  UNINSTALL
+# ==============================================================================
+#
+#  Just delete the .venv folder and the .ironwaffle folder. That is all.
+#  Nothing was installed system-wide unless you passed --no-venv.
+#
+# ==============================================================================
+#  NEXT STEPS AFTER INSTALL
+# ==============================================================================
+#
+#  1. python ironwaffle.py doctor        environment + policy check
+#  2. python ironwaffle.py brief         architecture + incident runbook
+#  3. python ironwaffle.py sim --all     offline attack scenarios
+#  4. python ironwaffle.py serve         HTTPS lab on 127.0.0.1:8443
+#  5. open https://127.0.0.1:8443/dashboard
+#  6. python ironwaffle.py flood --clients 40 --rps 25 --duration 20
+#
+# ==============================================================================
+
+
+<#
+/dev/null
+# ==============================================================================
+#  BASH PAYLOAD - Kali / Linux.  PowerShell sees this as a block comment.
+# ==============================================================================
+
+set -u
+
+IW_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+cd "$IW_ROOT" || exit 1
+
+# --- CRLF self-heal: the file may have been saved on Windows ---------------
+if [ "${IW_CRLF_FIXED:-0}" != "1" ] && head -n 5 "$0" 2>/dev/null | grep -q $'\r'; then
+    export IW_CRLF_FIXED=1
+    if sed -i 's/\r$//' "$0" 2>/dev/null; then
+        exec bash "$0" "$@"
+    fi
+fi
+
+# --- colours ---------------------------------------------------------------
+if [ -t 1 ]; then
+    R=$'\033[31m'; G=$'\033[32m'; Y=$'\033[33m'; C=$'\033[36m'
+    W=$'\033[97m'; D=$'\033[90m'; N=$'\033[0m'
+else
+    R=; G=; Y=; C=; W=; D=; N=
+fi
+say()  { printf '%s\n' "$C$1$N"; }
+ok()   { printf '%s[ OK ]%s %s\n' "$G" "$N" "$1"; }
+warn() { printf '%s[WARN]%s %s\n' "$Y" "$N" "$1"; }
+fail() { printf '%s[FAIL]%s %s\n' "$R" "$N" "$1"; }
+step() { printf '%s[ .. ]%s %s\n' "$D" "$N" "$1"; }
+hr()   { printf '%s\n' "$D--------------------------------------------------------------------$N"; }
+
+DRY=0; NOVENV=0; SERVE=0
+for a in "$@"; do
+    case "$a" in
+        --dry-run)          DRY=1 ;;
+        --no-venv|--system) NOVENV=1 ;;
+        --serve)            SERVE=1 ;;
+        -h|--help)
+            sed -n '2,80p' "$0" | sed 's/^# \{0,1\}//'
+            exit 0 ;;
+        *) warn "unknown option: $a" ;;
+    esac
+done
+
+run() {
+    step "$*"
+    [ "$DRY" = "1" ] && return 0
+    "$@"
+}
+
+clear 2>/dev/null || true
+hr
+say "IRON WAFFLE OMEGA  -  bootstrap  -  Kali / Linux"
+say "root: $IW_ROOT"
+[ "$DRY" = "1" ] && warn "DRY RUN - nothing will be changed"
+hr
+echo
+
+# ---------------------------------------------------------------- 1. python --
+PY=""
+for c in python3 python; do
+    if command -v "$c" >/dev/null 2>&1; then
+        if "$c" -c 'import sys; raise SystemExit(0 if sys.version_info>=(3,8) else 1)' 2>/dev/null; then
+            PY="$c"; break
+        fi
+    fi
+done
+
+if [ -z "$PY" ]; then
+    warn "python3 >= 3.8 not found"
+    if command -v apt-get >/dev/null 2>&1; then
+        SUDO=""
+        if [ "$(id -u)" != "0" ]; then
+            command -v sudo >/dev/null 2>&1 && SUDO="sudo" || warn "no sudo, may need root"
+        fi
+        run $SUDO apt-get update -qq
+        run $SUDO apt-get install -y python3 python3-pip python3-venv curl
+        PY="python3"
+    else
+        fail "install python3 >= 3.8 manually, then rerun"
+        exit 1
+    fi
+fi
+ok "python: $("$PY" -V 2>&1)"
+
+# ---------------------------------------------------------------- 2. venv ----
+if [ "$NOVENV" = "0" ]; then
+    VENV="$IW_ROOT/.venv"
+    if [ ! -x "$VENV/bin/python" ]; then
+        run "$PY" -m venv "$VENV" || warn "venv failed, using system python"
+    fi
+    if [ -x "$VENV/bin/python" ]; then
+        PY="$VENV/bin/python"
+        ok "virtualenv: $VENV"
+    fi
+else
+    warn "venv disabled - installing into the system python"
+fi
+
+# ---------------------------------------------------------------- 3. pip -----
+if [ "$DRY" = "0" ]; then
+    "$PY" -m pip install --upgrade --quiet pip 2>/dev/null && ok "pip upgraded" \
+        || warn "pip upgrade skipped"
+fi
+
+for pkg in cryptography psutil; do
+    if "$PY" -c "import $pkg" >/dev/null 2>&1; then
+        ok "already present: $pkg"
+    else
+        if run "$PY" -m pip install --quiet "$pkg"; then
+            ok "installed: $pkg"
+        else
+            warn "could not install $pkg (lab still works without it)"
+        fi
+    fi
+done
+
+# ---------------------------------------------------------------- 4. curl ----
+command -v curl >/dev/null 2>&1 && ok "curl present" || warn "curl missing (optional)"
+
+# ---------------------------------------------------------------- 5. lab -----
+echo
+hr
+if [ -f "$IW_ROOT/ironwaffle.py" ]; then
+    ok "found ironwaffle.py"
+    run "$PY" "$IW_ROOT/ironwaffle.py" cert
+    run "$PY" "$IW_ROOT/ironwaffle.py" doctor
+    run "$PY" "$IW_ROOT/ironwaffle.py" selftest
+else
+    warn "ironwaffle.py NOT found in $IW_ROOT"
+    warn "put it next to recriminat.txt and rerun, or copy it in manually"
+fi
+hr
+echo
+
+say "DONE. Next steps:"
+printf '  %s\n' "source $IW_ROOT/.venv/bin/activate      # if you want it in PATH"
+printf '  %s\n' "python ironwaffle.py brief             # architecture + runbook"
+printf '  %s\n' "python ironwaffle.py sim --all         # offline attack scenarios"
+printf '  %s\n' "python ironwaffle.py serve             # HTTPS lab on 127.0.0.1:8443"
+printf '  %s\n' "open https://127.0.0.1:8443/dashboard"
+echo
+
+if [ "$SERVE" = "1" ] && [ -f "$IW_ROOT/ironwaffle.py" ] && [ "$DRY" = "0" ]; then
+    say "starting the lab..."
+    exec "$PY" "$IW_ROOT/ironwaffle.py" serve
+fi
+
+exit 0
+#>
+
+
+# ==============================================================================
+#  POWERSHELL PAYLOAD - Windows.  bash never reaches here (it exited above).
+# ==============================================================================
+
+param(
+    [switch]$DryRun,
+    [switch]$NoVenv,
+    [switch]$Serve,
+    [switch]$Help
+)
+
+$ErrorActionPreference = 'Stop'
+$ProgressPreference    = 'SilentlyContinue'
+
+$Root = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
+Set-Location -LiteralPath $Root
+
+function Say  ($m) { Write-Host $m -ForegroundColor Cyan }
+function Ok   ($m) { Write-Host '[ OK ] ' -ForegroundColor Green  -NoNewline; Write-Host $m }
+function Warn ($m) { Write-Host '[WARN] ' -ForegroundColor Yellow -NoNewline; Write-Host $m }
+function Fail ($m) { Write-Host '[FAIL] ' -ForegroundColor Red    -NoNewline; Write-Host $m }
+function Step ($m) { Write-Host '[ .. ] ' -ForegroundColor DarkGray -NoNewline; Write-Host $m }
+function Hr        { Write-Host ('-' * 68) -ForegroundColor DarkGray }
+
+if ($Help) {
+    Get-Content -LiteralPath $PSCommandPath | Select-Object -Skip 1 -First 79 |
+        ForEach-Object { $_ -replace '^# ?', '' }
+    exit 0
+}
+
+Hr
+Say 'IRON WAFFLE OMEGA  -  bootstrap  -  Windows PowerShell'
+Say "root: $Root"
+if ($DryRun) { Warn 'DRY RUN - nothing will be changed' }
+Hr
+Write-Host ''
+
+# ---------------------------------------------------------------- 1. python --
+$Py = $null
+$PyArgs = @()
+
+if (Get-Command py -ErrorAction SilentlyContinue) {
+    & py -3 -c "import sys; raise SystemExit(0 if sys.version_info>=(3,8) else 1)" 2>$null
+    if ($LASTEXITCODE -eq 0) { $Py = 'py'; $PyArgs = @('-3') }
+}
+if (-not $Py) {
+    foreach ($cand in @('python', 'python3')) {
+        if (Get-Command $cand -ErrorAction SilentlyContinue) {
+            & $cand -c "import sys; raise SystemExit(0 if sys.version_info>=(3,8) else 1)" 2>$null
+            if ($LASTEXITCODE -eq 0) { $Py = $cand; $PyArgs = @(); break }
+        }
+    }
+}
+
+if (-not $Py) {
+    Warn 'Python 3.8+ not found'
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        Step 'winget install Python.Python.3.12'
+        if (-not $DryRun) {
+            winget install --id Python.Python.3.12 -e --source winget `
+                --accept-package-agreements --accept-source-agreements
+        }
+        Warn 'close and reopen PowerShell, then rerun this script'
+    } else {
+        Fail 'install Python 3.8+ from python.org, then rerun'
+    }
+    if (-not (Get-Command python -ErrorAction SilentlyContinue)) { exit 1 }
+    $Py = 'python'; $PyArgs = @()
+}
+Ok "python: $(& $Py @PyArgs -V 2>&1)"
+
+# ---------------------------------------------------------------- 2. venv ----
+if (-not $NoVenv) {
+    $Venv = Join-Path $Root '.venv'
+    $VenvPy = Join-Path $Venv 'Scripts\python.exe'
+    if (-not (Test-Path -LiteralPath $VenvPy)) {
+        Step "create venv: $Venv"
+        if (-not $DryRun) {
+            & $Py @PyArgs -m venv $Venv
+            if ($LASTEXITCODE -ne 0) { Warn 'venv failed, using system python' }
+        }
+    }
+    if (Test-Path -LiteralPath $VenvPy) {
+        $Py = $VenvPy; $PyArgs = @()
+        Ok "virtualenv: $Venv"
+    }
+} else {
+    Warn 'venv disabled - installing into the system python'
+}
+
+# ---------------------------------------------------------------- 3. pip -----
+if (-not $DryRun) {
+    & $Py @PyArgs -m pip install --upgrade --quiet pip 2>$null
+    if ($LASTEXITCODE -eq 0) { Ok 'pip upgraded' } else { Warn 'pip upgrade skipped' }
+}
+
+foreach ($pkg in @('cryptography', 'psutil')) {
+    & $Py @PyArgs -c "import $pkg" 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        Ok "already present: $pkg"
+    } else {
+        Step "pip install $pkg"
+        if (-not $DryRun) {
+            & $Py @PyArgs -m pip install --quiet $pkg
+            if ($LASTEXITCODE -eq 0) { Ok "installed: $pkg" }
+            else { Warn "could not install $pkg (lab still works without it)" }
+        }
+    }
+}
+
+# ---------------------------------------------------------------- 4. curl ----
+if (Get-Command curl.exe -ErrorAction SilentlyContinue) { Ok 'curl present' }
+else { Warn 'curl.exe missing (optional)' }
+
+# ---------------------------------------------------------------- 5. lab -----
+Write-Host ''
+Hr
+$Lab = Join-Path $Root 'ironwaffle.py'
+if (Test-Path -LiteralPath $Lab) {
+    Ok 'found ironwaffle.py'
+    if (-not $DryRun) {
+        & $Py @PyArgs $Lab cert
+        & $Py @PyArgs $Lab doctor
+        & $Py @PyArgs $Lab selftest
+    }
+} else {
+    Warn "ironwaffle.py NOT found in $Root"
+    Warn 'put it next to recriminat.txt and rerun'
+}
+Hr
+Write-Host ''
+
+Say 'DONE. Next steps:'
+Write-Host "  .\.venv\Scripts\Activate.ps1        # optional, adds python to PATH"
+Write-Host '  python ironwaffle.py brief           # architecture + runbook'
+Write-Host '  python ironwaffle.py sim --all       # offline attack scenarios'
+Write-Host '  python ironwaffle.py serve           # HTTPS lab on 127.0.0.1:8443'
+Write-Host '  start https://127.0.0.1:8443/dashboard'
+Write-Host ''
+
+if ($Serve -and (Test-Path -LiteralPath $Lab) -and (-not $DryRun)) {
+    Say 'starting the lab...'
+    & $Py @PyArgs $Lab serve
+}
+
+exit 0
